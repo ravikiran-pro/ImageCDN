@@ -4,11 +4,31 @@ require('dotenv').config();
 // Load required module
 const fs = require('fs');
 const path = require('path');
+const util = require('util');
 const url = require('url');
 const Jimp = require('jimp');
+const readdir = util.promisify(fs.readdir);
+const unlink = util.promisify(fs.unlink);
 
 const express = require('express');
 const app = express();
+const multer = require('multer');
+const { v4: uuid } = require('uuid');
+
+
+const PORT = process.env.PORT;
+
+const storage = multer.diskStorage({
+	destination: (req, file, cb) => {
+		cb(null, 'uploads')
+	},
+	filename: (req, file, cb) => {
+		req.header.url = uuid() + '.' + file.originalname.split('.').pop()
+		cb(null, req.header.url)
+	}
+})
+
+const upload = multer({ storage: storage })
 
 // Use cors middleware to allow/disallow 
 const cors = require('cors');
@@ -25,52 +45,34 @@ app.use(function (err, req, res, next) {
 	res.sendFile(filePath);
 });
 
-app.get('*', async function (req, res) {
-
-	// Remove headers info
-	res.removeHeader('Transfer-Encoding');
-	res.removeHeader('X-Powered-By');
-
-	const query = url.parse(req.url, true).query;
+app.get('/:url', async function (req, res) {
 	let file = url.parse(req.url).pathname;
-	let filePath = path.join(__dirname, `public/images/${file}`);
-
-	if (!fs.existsSync(filePath)) {
-		file = process.env.DEFAULT_IMAGE;
-		filePath = path.join(__dirname, `public/images/${file}`);
-	}
-
-	const height = parseInt(query.h) || 0; // Get height from query string
-	const width = parseInt(query.w) || 0; // Get width from query string
-	const quality = parseInt(query.q) < 100 ? parseInt(query.q) : 99; // Get quality from query string
-
-	const folder = `q${quality}_h${height}_w${width}`;
-	const out_file = `public/thumb/${folder}/${file}`;
-	if (fs.existsSync(path.resolve(out_file))) {
-		res.sendFile(path.resolve(out_file));
-		return;
-	}
-
-	// If no height or no width display original image
-	if (!height || !width) {
-		res.sendFile(path.resolve(`public/images/${file}`));
-		return;
-	}
-
-	// Use jimp to resize image
-	Jimp.read(path.resolve(`public/images/${file}`))
-		.then(lenna => {
-
-			lenna.resize(width, height); // resize
-			lenna.quality(quality); // set JPEG quality
-
-			lenna.write(path.resolve(out_file), () => {
-				fs.createReadStream(path.resolve(out_file)).pipe(res);
-			}); // save and display
-		})
-		.catch(err => {
-			res.sendFile(path.resolve(`public/images/${file}`));
-		});
-
+	let filePath = path.join(__dirname, `uploads/${file}`);
+	res.sendFile(path.resolve(`uploads/${file}`));
 });
-app.listen(process.env.PORT);
+
+async function deleteAllFilesInDir(dirPath) {
+	try {
+		const files = await readdir(dirPath);
+		const unlinkPromises = files.map(filename => unlink(`${dirPath}/${filename}`));
+		return Promise.all(unlinkPromises);
+	} catch (err) {
+		console.log(err);
+	}
+}
+
+app.post('/upload', upload.single('image'), (req, res) => {
+	res.status(200).json({
+		url: req.protocol + '://' + req.get('host') + '/' + req.header.url
+	})
+})
+
+app.post('/clear', (req, res) => {
+	deleteAllFilesInDir('uploads').then(() => {
+		res.status(200).json("Clearead All images")
+	});
+})
+
+app.listen(PORT, () => {
+	console.log(`Server listening at http://localhost:${PORT}`);
+});
